@@ -110,15 +110,18 @@ export default function Home() {
 
         if (data.type === "transcript") {
           if (data.is_final) {
-            const entry: TranscriptEntry = {
-              id: entryIdRef.current++,
-              text: data.text,
-              isFinal: true,
-              timestamp: new Date(),
-            };
-            setTranscripts((prev) => [...prev, entry]);
+            const text = (data.text ?? "").trim();
+            if (text) {
+              const entry: TranscriptEntry = {
+                id: entryIdRef.current++,
+                text,
+                isFinal: true,
+                timestamp: new Date(),
+              };
+              setTranscripts((prev) => [...prev, entry]);
+              console.log("[Grape] FINAL:", text);
+            }
             setPartialText("");
-            console.log("[Grape] FINAL:", data.text);
           } else {
             setPartialText(data.text);
             console.log("[Grape] partial:", data.text);
