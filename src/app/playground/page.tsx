@@ -119,7 +119,7 @@ export default function Playground() {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let speakMessage: string | null = null;
+      let llmText = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -137,13 +137,14 @@ export default function Playground() {
           try {
             const data = JSON.parse(payload);
 
-            if (data.type === "tool_use" && data.name?.endsWith("speak_to_user")) {
-              speakMessage = data.input?.message;
-              console.log("[Grape] LLM wants to speak:", speakMessage);
+            if (data.type === "tool_use" && data.name === "speak_to_user") {
+              console.log("[Grape] LLM wants to speak:", data.input?.message);
+              // Fire TTS immediately — don't wait for stream to finish
+              speakTTS(data.input?.message);
             }
 
             if (data.type === "text") {
-              console.log("[Grape] LLM:", data.text);
+              llmText += data.text;
             }
 
             if (data.type === "error") {
@@ -155,9 +156,8 @@ export default function Playground() {
         }
       }
 
-      // If the LLM called speak_to_user, play the message via TTS
-      if (speakMessage) {
-        await speakTTS(speakMessage);
+      if (llmText) {
+        console.log("[Grape] LLM response:", llmText.trim());
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {

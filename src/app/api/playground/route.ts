@@ -1,8 +1,8 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { playgroundToolsServer, allowedTools } from "./tools";
+import Anthropic from "@anthropic-ai/sdk";
 
 export const maxDuration = 30;
+
+const client = new Anthropic();
 
 const SYSTEM_PROMPT = `You are Grape, a voice AI assistant embedded in product team meetings. You listen to real-time meeting transcripts.
 
@@ -19,85 +19,63 @@ CONTEXT:
 - Multiple people may be speaking; only respond when someone addresses "Grape"
 - Respond conversationally, as if speaking in a meeting`;
 
+const tools: Anthropic.Tool[] = [
+  {
+    name: "speak_to_user",
+    description:
+      "Speak a message aloud to the meeting participants. Use this when someone directly addresses Grape. Keep responses brief — 1-2 sentences for natural voice delivery.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        message: {
+          type: "string",
+          description: "The message to speak aloud to the user",
+        },
+      },
+      required: ["message"],
+    },
+  },
+];
+
 export async function POST(req: Request) {
   const { transcript } = await req.json();
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      const response = client.messages.stream({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 300,
+        system: SYSTEM_PROMPT,
+        tools,
+        messages: [{ role: "user", content: transcript }],
+      });
+
+      response.on("text", (text) => {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "text", text })}\n\n`
+          )
+        );
+      });
+
+      // contentBlock fires with the COMPLETE block — tool_use includes full input
+      response.on("contentBlock", (block) => {
+        if (block.type === "tool_use") {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                type: "tool_use",
+                name: block.name,
+                input: block.input,
+              })}\n\n`
+            )
+          );
+        }
+      });
+
       try {
-        async function* promptStream(): AsyncGenerator<SDKUserMessage> {
-          yield {
-            type: "user" as const,
-            session_id: "",
-            parent_tool_use_id: null,
-            message: {
-              role: "user" as const,
-              content: transcript,
-            },
-          };
-        }
-
-        const agentStream = query({
-          prompt: promptStream(),
-          options: {
-            mcpServers: {
-              "playground-tools": playgroundToolsServer,
-            },
-            allowedTools,
-            maxTurns: 2,
-            env: {
-              ...(process.env as Record<string, string>),
-              ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!,
-            },
-            stderr: (data: string) => console.error("[playground-sdk]", data),
-            systemPrompt: SYSTEM_PROMPT,
-          },
-        });
-
-        for await (const msg of agentStream) {
-          if (msg.type === "assistant") {
-            for (const block of msg.message.content) {
-              if (block.type === "text" && block.text) {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ type: "text", text: block.text })}\n\n`
-                  )
-                );
-              }
-              if (block.type === "tool_use") {
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({
-                      type: "tool_use",
-                      name: block.name,
-                      input: block.input,
-                    })}\n\n`
-                  )
-                );
-              }
-            }
-          }
-
-          if (msg.type === "result" && msg.subtype === "success") {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ type: "result", text: msg.result })}\n\n`
-              )
-            );
-          }
-
-          if (msg.type === "result" && msg.subtype !== "success") {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({
-                  type: "error",
-                  text: `Agent stopped: ${msg.subtype}`,
-                })}\n\n`
-              )
-            );
-          }
-        }
+        await response.finalMessage();
       } catch (err) {
         controller.enqueue(
           encoder.encode(
@@ -108,6 +86,11 @@ export async function POST(req: Request) {
           )
         );
       } finally {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: "result", text: "done" })}\n\n`
+          )
+        );
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
