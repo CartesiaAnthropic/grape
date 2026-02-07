@@ -20,7 +20,7 @@ const sendEmail = tool(
   async (args) => {
     const { data, error } = await resend.emails.send({
       from: "Grape <onboarding@resend.dev>",
-      to: ["qba.sobolewski@gmail.com"], //[args.to],
+      to: [args.to],
       subject: args.subject,
       html: args.body,
     });
