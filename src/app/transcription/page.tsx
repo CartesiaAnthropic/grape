@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { streamChat } from "../lib/chat-stream";
 
 interface TranscriptEntry {
   id: number;
@@ -9,27 +10,39 @@ interface TranscriptEntry {
   timestamp: Date;
 }
 
+interface AgentAction {
+  type: "tool_use" | "text" | "result" | "error";
+  name?: string;
+  input?: unknown;
+  text?: string;
+}
+
 const STT_SAMPLE_RATE = 16000;
 const STT_MODEL = "ink-whisper";
 const STT_ENCODING = "pcm_s16le";
 const STT_LANGUAGE = "en";
 
-export default function Home() {
+export default function TranscriptionPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // Agent state
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [agentActions, setAgentActions] = useState<AgentAction[]>([]);
+  const [agentResult, setAgentResult] = useState<string | null>(null);
+
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const entryIdRef = useRef(0);
+  const lastProcessedCountRef = useRef(0);
+  const processingRef = useRef(false);
 
   const stop = useCallback(() => {
-    console.log("[Grape] Stopping recording...");
-
     if (workletNodeRef.current) {
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
@@ -59,20 +72,16 @@ export default function Home() {
     setIsConnecting(true);
 
     try {
-      // 1. Get access token from our API route
-      console.log("[Grape] Requesting Cartesia access token...");
       const tokenRes = await fetch("/api/cartesia-token", { method: "POST" });
       if (!tokenRes.ok) {
         throw new Error(`Token request failed: ${tokenRes.status}`);
       }
       const tokenData = await tokenRes.json();
-      console.log("[Grape] Token response:", tokenData);
       const accessToken = tokenData.access_token;
       if (!accessToken) {
         throw new Error("No access_token in response");
       }
 
-      // 2. Connect WebSocket to Cartesia STT
       const params = new URLSearchParams({
         access_token: accessToken,
         cartesia_version: "2024-06-10",
@@ -82,31 +91,20 @@ export default function Home() {
         sample_rate: String(STT_SAMPLE_RATE),
       });
       const wsUrl = `wss://api.cartesia.ai/stt/websocket?${params}`;
-      console.log("[Grape] Connecting to Cartesia STT WebSocket...", wsUrl.replace(accessToken, "***"));
 
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => {
-          console.log("[Grape] WebSocket connected");
-          resolve();
-        };
-        ws.onerror = (e) => {
-          console.error("[Grape] WebSocket onerror event:", e);
-          reject(new Error("WebSocket connection failed"));
-        };
-        ws.onclose = (e) => {
-          console.error("[Grape] WebSocket closed during connect:", e.code, e.reason);
+        ws.onopen = () => resolve();
+        ws.onerror = () => reject(new Error("WebSocket connection failed"));
+        ws.onclose = (e) =>
           reject(new Error(`WebSocket closed: ${e.code} ${e.reason}`));
-        };
         setTimeout(() => reject(new Error("WebSocket connection timeout")), 10000);
       });
 
-      // 3. Listen for transcription results
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        console.log("[Grape] STT message:", data);
 
         if (data.type === "transcript") {
           if (data.is_final) {
@@ -124,25 +122,15 @@ export default function Home() {
             setPartialText("");
           } else {
             setPartialText(data.text);
-            console.log("[Grape] partial:", data.text);
           }
         } else if (data.type === "error") {
-          console.error("[Grape] STT error:", data.message);
           setError(data.message);
         }
       };
 
-      ws.onclose = (event) => {
-        console.log("[Grape] WebSocket closed:", event.code, event.reason);
-        stop();
-      };
+      ws.onclose = () => stop();
+      ws.onerror = (event) => console.error("[Grape] WebSocket error:", event);
 
-      ws.onerror = (event) => {
-        console.error("[Grape] WebSocket error:", event);
-      };
-
-      // 4. Capture microphone audio
-      console.log("[Grape] Requesting microphone access...");
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: STT_SAMPLE_RATE,
@@ -152,9 +140,7 @@ export default function Home() {
         },
       });
       mediaStreamRef.current = stream;
-      console.log("[Grape] Microphone access granted");
 
-      // 5. Process audio with AudioWorklet for PCM extraction
       const audioCtx = new AudioContext({ sampleRate: STT_SAMPLE_RATE });
       audioContextRef.current = audioCtx;
 
@@ -195,104 +181,255 @@ export default function Home() {
 
       setIsRecording(true);
       setIsConnecting(false);
-      console.log("[Grape] Recording started - speak now!");
     } catch (err) {
-      console.error("[Grape] Start failed:", err);
       setError(err instanceof Error ? err.message : "Failed to start");
       setIsConnecting(false);
       stop();
     }
   }, [stop]);
 
+  // Auto-process whenever new transcript entries arrive
+  useEffect(() => {
+    if (transcripts.length === 0) return;
+    if (transcripts.length === lastProcessedCountRef.current) return;
+    if (processingRef.current) return;
+
+    const fullTranscript = transcripts.map((t) => t.text).join("\n");
+    lastProcessedCountRef.current = transcripts.length;
+    processingRef.current = true;
+    setIsProcessing(true);
+
+    streamChat(
+      `Here is the meeting transcript:\n\n${fullTranscript}`,
+      (event) => {
+        if (event.type === "tool_use") {
+          setAgentActions((prev) => [
+            ...prev,
+            { type: "tool_use", name: event.name, input: event.input },
+          ]);
+        }
+        if (event.type === "result") {
+          setAgentResult(event.text);
+        }
+        if (event.type === "error") {
+          setAgentActions((prev) => [
+            ...prev,
+            { type: "error", text: event.text },
+          ]);
+        }
+      }
+    )
+      .catch((err) => {
+        setAgentActions((prev) => [
+          ...prev,
+          { type: "error", text: String(err) },
+        ]);
+      })
+      .finally(() => {
+        processingRef.current = false;
+        setIsProcessing(false);
+      });
+  }, [transcripts]);
+
+  const toolLabel = (name: string) =>
+    name
+      .replace(/^mcp__custom-tools__/, "")
+      .replace(/^mcp__notion__/, "notion:")
+      .replace(/_/g, " ");
+
+  const toolIcon = (name: string) => {
+    if (name.includes("send_email")) return "mail";
+    if (name.includes("notion") || name.includes("update_notion")) return "notebook";
+    if (name.includes("create_task")) return "check-circle";
+    if (name.includes("say_hello")) return "hand-wave";
+    return "tool";
+  };
+
+  const iconMap: Record<string, string> = {
+    mail: "\u2709",
+    notebook: "\uD83D\uDCD3",
+    "check-circle": "\u2705",
+    "hand-wave": "\uD83D\uDC4B",
+    tool: "\uD83D\uDD27",
+  };
+
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-50 font-sans dark:bg-zinc-950">
-      <header className="border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
-        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-          Grape
-        </h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Real-time meeting transcription
-        </p>
-      </header>
+    <div className="flex h-screen flex-col bg-zinc-50 font-sans dark:bg-zinc-950">
+      {/* Header + Controls */}
+      <header className="shrink-0 border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
+              Grape
+            </h1>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Real-time meeting transcription
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={isRecording ? stop : start}
+              disabled={isConnecting}
+              className={`flex h-10 items-center gap-2 rounded-full px-5 text-sm font-medium transition-colors ${
+                isRecording
+                  ? "bg-red-600 text-white hover:bg-red-700"
+                  : isConnecting
+                    ? "cursor-wait bg-zinc-300 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400"
+                    : "bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              }`}
+            >
+              {isRecording ? (
+                <>
+                  <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-white" />
+                  Stop
+                </>
+              ) : isConnecting ? (
+                "Connecting..."
+              ) : (
+                "Start Recording"
+              )}
+            </button>
 
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 p-6">
-        {/* Controls */}
-        <div className="flex items-center gap-4">
-          <button
-            onClick={isRecording ? stop : start}
-            disabled={isConnecting}
-            className={`flex h-12 items-center gap-2 rounded-full px-6 font-medium transition-colors ${
-              isRecording
-                ? "bg-red-600 text-white hover:bg-red-700"
-                : isConnecting
-                  ? "cursor-wait bg-zinc-300 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400"
-                  : "bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-            }`}
-          >
-            {isRecording ? (
-              <>
-                <span className="h-3 w-3 animate-pulse rounded-full bg-white" />
-                Stop Recording
-              </>
-            ) : isConnecting ? (
-              "Connecting..."
-            ) : (
-              "Start Recording"
+            {isRecording && (
+              <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                Listening...
+              </span>
             )}
-          </button>
-
-          {isRecording && (
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              Listening...
-            </span>
-          )}
+          </div>
         </div>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
             {error}
           </div>
         )}
+      </header>
 
-        {/* Transcript */}
-        <div className="flex-1 rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-            Transcript
-          </h2>
+      {/* Two-column layout */}
+      <div className="flex min-h-0 flex-1">
+        {/* Left: Transcript */}
+        <div className="flex w-1/2 flex-col border-r border-zinc-200 dark:border-zinc-800">
+          <div className="border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+              Transcript
+            </h2>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {transcripts.length === 0 && !partialText ? (
+              <p className="mt-8 text-center text-sm text-zinc-400 dark:text-zinc-600">
+                {isRecording
+                  ? "Waiting for speech..."
+                  : "Press Start Recording to begin."}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {transcripts.map((entry) => (
+                  <div key={entry.id} className="flex gap-3">
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-zinc-400 dark:text-zinc-600">
+                      {entry.timestamp.toLocaleTimeString()}
+                    </span>
+                    <p className="text-sm text-zinc-900 dark:text-zinc-100">
+                      {entry.text}
+                    </p>
+                  </div>
+                ))}
 
-          {transcripts.length === 0 && !partialText ? (
-            <p className="text-zinc-400 dark:text-zinc-600">
-              {isRecording
-                ? "Waiting for speech..."
-                : "Press Start Recording to begin."}
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {transcripts.map((entry) => (
-                <div key={entry.id} className="flex gap-3">
-                  <span className="shrink-0 pt-1 font-mono text-xs text-zinc-400 dark:text-zinc-600">
-                    {entry.timestamp.toLocaleTimeString()}
-                  </span>
-                  <p className="text-zinc-900 dark:text-zinc-100">
-                    {entry.text}
-                  </p>
-                </div>
-              ))}
-
-              {partialText && (
-                <div className="flex gap-3">
-                  <span className="shrink-0 pt-1 font-mono text-xs text-zinc-400 dark:text-zinc-600">
-                    {new Date().toLocaleTimeString()}
-                  </span>
-                  <p className="italic text-zinc-400 dark:text-zinc-500">
-                    {partialText}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+                {partialText && (
+                  <div className="flex gap-3">
+                    <span className="shrink-0 pt-0.5 font-mono text-xs text-zinc-400 dark:text-zinc-600">
+                      {new Date().toLocaleTimeString()}
+                    </span>
+                    <p className="text-sm italic text-zinc-400 dark:text-zinc-500">
+                      {partialText}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      </main>
+
+        {/* Right: Actions */}
+        <div className="flex w-1/2 flex-col">
+          <div className="border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+              Actions
+            </h2>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-4">
+            {agentActions.length === 0 && !agentResult && !isProcessing && (
+              <p className="mt-8 text-center text-sm text-zinc-400 dark:text-zinc-600">
+                Actions will appear here after processing.
+              </p>
+            )}
+
+            {isProcessing && agentActions.length === 0 && (
+              <div className="mt-8 flex flex-col items-center gap-3">
+                <span className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" />
+                <p className="text-sm text-zinc-400">Analyzing transcript...</p>
+              </div>
+            )}
+
+            {agentActions.length > 0 && (
+              <div className="space-y-3">
+                {agentActions.map((action, i) => (
+                  <div
+                    key={i}
+                    className={`rounded-lg border p-3 ${
+                      action.type === "error"
+                        ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
+                        : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+                    }`}
+                  >
+                    {action.type === "tool_use" && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">
+                            {iconMap[toolIcon(action.name ?? "")]}
+                          </span>
+                          <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                            {toolLabel(action.name ?? "")}
+                          </span>
+                        </div>
+                        <div className="mt-2 space-y-1">
+                          {Object.entries(
+                            (action.input as Record<string, unknown>) ?? {}
+                          ).map(([key, val]) => (
+                            <div key={key} className="flex gap-2 text-xs">
+                              <span className="shrink-0 font-mono text-zinc-400 dark:text-zinc-500">
+                                {key}:
+                              </span>
+                              <span className="truncate text-zinc-600 dark:text-zinc-400">
+                                {String(val)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {action.type === "error" && (
+                      <p className="text-sm text-red-700 dark:text-red-400">
+                        {action.text}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {agentResult && (
+              <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-800 dark:bg-indigo-950">
+                <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                  Summary
+                </h3>
+                <div className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+                  {agentResult}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

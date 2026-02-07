@@ -1,28 +1,45 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { Resend } from "resend";
 import { z } from "zod";
 
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 // ============================================================
-// Custom tools — stub implementations for testing
-// Replace these with real integrations later
+// Custom tools
 // ============================================================
 
 const sendEmail = tool(
   "send_email",
-  "Send an email to a recipient",
+  "Send an email to a recipient via Resend",
   {
     to: z.string().describe("Recipient email address"),
     subject: z.string().describe("Email subject line"),
-    body: z.string().describe("Email body content"),
+    body: z.string().describe("Email body as HTML"),
   },
   async (args) => {
-    // Stub: log and return confirmation
-    console.log(`[send_email] To: ${args.to}, Subject: ${args.subject}`);
+    const { data, error } = await resend.emails.send({
+      from: "Grape <onboarding@resend.dev>",
+      to: [args.to],
+      subject: args.subject,
+      html: args.body,
+    });
+
+    if (error) {
+      console.error("[send_email] Error:", error);
+      return {
+        content: [
+          { type: "text" as const, text: `Failed to send email: ${error.message}` },
+        ],
+      };
+    }
+
+    console.log("[send_email] Sent:", data);
     return {
       content: [
         {
           type: "text" as const,
-          text: `Email sent to ${args.to} with subject "${args.subject}"`,
+          text: `Email sent to ${args.to} with subject "${args.subject}" (id: ${data?.id})`,
         },
       ],
     };
@@ -83,10 +100,25 @@ const createTask = tool(
   }
 );
 
+const sayHello = tool(
+  "say_hello",
+  "Say hello — prints a greeting to the server console",
+  {
+    name: z.string().optional().describe("Name to greet"),
+  },
+  async (args) => {
+    const greeting = args.name ? `Hello, ${args.name}!` : "Hello!";
+    console.log(`[say_hello] ${greeting}`);
+    return {
+      content: [{ type: "text" as const, text: greeting }],
+    };
+  }
+);
+
 export const customToolsServer = createSdkMcpServer({
   name: "custom-tools",
   version: "1.0.0",
-  tools: [sendEmail, updateNotion, createTask],
+  tools: [sendEmail, updateNotion, createTask, sayHello],
 });
 
 // ============================================================

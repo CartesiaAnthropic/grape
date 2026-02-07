@@ -7,6 +7,8 @@ export const maxDuration = 120;
 export async function POST(req: Request) {
   const { message } = await req.json();
 
+  console.log("[chat] Incoming message:\n", message);
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -54,7 +56,11 @@ Always execute the actions — don't just list them. After executing, give a bri
           },
         });
 
+        let turn = 0;
         for await (const msg of agentStream) {
+          console.log(`[chat] Turn ${turn++} | type=${msg.type}${msg.type === "result" ? ` subtype=${(msg as any).subtype}` : ""}`);
+          console.log("[chat] Full message:", JSON.stringify(msg, null, 2));
+
           // Stream assistant text chunks
           if (msg.type === "assistant") {
             for (const block of msg.message.content) {

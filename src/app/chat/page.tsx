@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { streamChat } from "../lib/chat-stream";
 
 type Message = {
   role: "user" | "assistant";
@@ -33,75 +34,50 @@ export default function ChatPage() {
     ]);
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6);
-          if (payload === "[DONE]") break;
-
-          const data = JSON.parse(payload);
-
-          if (data.type === "text" || data.type === "result") {
-            setMessages((prev) => {
-              const copy = [...prev];
-              const last = copy[copy.length - 1];
-              if (last.role === "assistant") {
-                copy[copy.length - 1] = {
-                  ...last,
-                  content:
-                    data.type === "result" ? data.text : last.content + data.text,
-                };
-              }
-              return copy;
-            });
-          }
-
-          if (data.type === "tool_use") {
-            setMessages((prev) => {
-              const copy = [...prev];
-              const last = copy[copy.length - 1];
-              if (last.role === "assistant") {
-                copy[copy.length - 1] = {
-                  ...last,
-                  toolCalls: [
-                    ...(last.toolCalls ?? []),
-                    { name: data.name, input: data.input },
-                  ],
-                };
-              }
-              return copy;
-            });
-          }
-
-          if (data.type === "error") {
-            setMessages((prev) => {
-              const copy = [...prev];
-              const last = copy[copy.length - 1];
-              if (last.role === "assistant") {
-                copy[copy.length - 1] = { ...last, content: `Error: ${data.text}` };
-              }
-              return copy;
-            });
-          }
+      await streamChat(text, (event) => {
+        if (event.type === "text" || event.type === "result") {
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last.role === "assistant") {
+              copy[copy.length - 1] = {
+                ...last,
+                content:
+                  event.type === "result" ? event.text : last.content + event.text,
+              };
+            }
+            return copy;
+          });
         }
-      }
+
+        if (event.type === "tool_use") {
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last.role === "assistant") {
+              copy[copy.length - 1] = {
+                ...last,
+                toolCalls: [
+                  ...(last.toolCalls ?? []),
+                  { name: event.name, input: event.input },
+                ],
+              };
+            }
+            return copy;
+          });
+        }
+
+        if (event.type === "error") {
+          setMessages((prev) => {
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last.role === "assistant") {
+              copy[copy.length - 1] = { ...last, content: `Error: ${event.text}` };
+            }
+            return copy;
+          });
+        }
+      });
     } catch (err) {
       setMessages((prev) => {
         const copy = [...prev];
