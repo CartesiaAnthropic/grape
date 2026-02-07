@@ -126,6 +126,17 @@ export const customToolsServer = createSdkMcpServer({
 // ============================================================
 
 export const mcpServers: Record<string, McpServerConfig> = {
+  ...(process.env.LINEAR_API_KEY
+    ? {
+        linear: {
+          type: "http" as const,
+          url: "https://mcp.linear.app/mcp",
+          headers: {
+            Authorization: `Bearer ${process.env.LINEAR_API_KEY}`,
+          },
+        },
+      }
+    : {}),
   ...(process.env.NOTION_TOKEN
     ? {
         notion: {
@@ -145,5 +156,6 @@ export const mcpServers: Record<string, McpServerConfig> = {
 
 export const allowedTools: string[] = [
   "mcp__custom-tools__*",
+  ...(process.env.LINEAR_API_KEY ? ["mcp__linear__*"] : []),
   ...(process.env.NOTION_TOKEN ? ["mcp__notion__*"] : []),
 ];
