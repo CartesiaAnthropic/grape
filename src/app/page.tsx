@@ -136,6 +136,89 @@ function useSmoothParams(target: ShaderParams, duration = 1500): ShaderParams {
   return current;
 }
 
+function useMicLevel(active: boolean): number {
+  const [level, setLevel] = useState(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!active) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+      setLevel(0);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        streamRef.current = stream;
+
+        const ctx = new AudioContext();
+        audioCtxRef.current = ctx;
+
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.92;
+        source.connect(analyser);
+
+        const dataArray = new Float32Array(analyser.fftSize);
+        let smoothed = 0;
+
+        function tick() {
+          if (cancelled) return;
+          analyser.getFloatTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i] * dataArray[i];
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+          const normalized = Math.min(1, rms * 3);
+          // Exponential moving average for smoothness
+          smoothed += (normalized - smoothed) * 0.12;
+          setLevel(smoothed);
+          rafRef.current = requestAnimationFrame(tick);
+        }
+        tick();
+      } catch (err) {
+        console.error("Mic access failed:", err);
+      }
+    }
+
+    start();
+
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+        audioCtxRef.current = null;
+      }
+    };
+  }, [active]);
+
+  return level;
+}
+
 const IDLE_COLORS: ColorSet = ["#d5e1cb", "#c1d7c5", "#f0edd4"];
 const STARTED_COLORS: ColorSet = ["#98d760", "#89b946", "#f0edd4"];
 
@@ -169,6 +252,8 @@ export default function Home() {
   });
   const [showCustomEditor, setShowCustomEditor] = useState(false);
 
+  const micLevel = useMicLevel(started);
+
   const targetColors = !started ? IDLE_COLORS : useCustom ? customColors : PRESETS[activePreset].colors;
   const [c1, c2, c3] = useSmoothColors(targetColors, 1500);
   const targetParams = !started
@@ -196,9 +281,11 @@ export default function Home() {
           height: "367px",
           left: "50%",
           top: "50%",
-          transform: `translate(-50%, -50%) scale(${started ? 1.45 : 0.42})`,
+          transform: `translate(-50%, -50%) scale(${started ? 1.45 * (0.875 + micLevel * 0.25) : 0.42})`,
           opacity: 1,
-          transition: "transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          transition: started
+            ? "transform 0.15s ease-out"
+            : "transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)",
         }}
       >
         <ShaderGradientCanvas
@@ -313,6 +400,48 @@ export default function Home() {
             {preset.name}
           </button>
         ))}
+
+        {/* Divider */}
+        <div style={{ height: "1px", backgroundColor: "rgba(255,255,255,0.1)", margin: "4px 0" }} />
+
+        {/* Mic signal */}
+        <span
+          className="text-[11px] font-medium tracking-wider uppercase px-1"
+          style={{ color: "rgba(255,255,255,0.4)" }}
+        >
+          Mic Signal
+        </span>
+        <div className="px-1 flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex-1 h-2 rounded-full overflow-hidden"
+              style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
+            >
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${micLevel * 100}%`,
+                  backgroundColor: micLevel > 0.7 ? "#ff4444" : micLevel > 0.4 ? "#f5c842" : "#4ade80",
+                  transition: "width 0.08s linear, background-color 0.2s",
+                }}
+              />
+            </div>
+            <span
+              className="text-[10px] font-mono shrink-0"
+              style={{ color: "rgba(255,255,255,0.5)", minWidth: "32px", textAlign: "right" }}
+            >
+              {micLevel.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+              Scale
+            </span>
+            <span className="text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.35)" }}>
+              {started ? (1.45 * (0.875 + micLevel * 0.25)).toFixed(2) : "0.42"}x
+            </span>
+          </div>
+        </div>
 
         {/* Divider */}
         <div style={{ height: "1px", backgroundColor: "rgba(255,255,255,0.1)", margin: "4px 0" }} />
