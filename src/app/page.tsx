@@ -9,12 +9,20 @@ export default function Home() {
       <p className="mt-2 text-zinc-500 dark:text-zinc-400">
         Meeting support assistant
       </p>
-      <Link
-        href="/transcription"
-        className="mt-6 rounded-full bg-zinc-900 px-6 py-3 font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
-      >
-        Open Transcription
-      </Link>
+      <div className="mt-6 flex flex-col gap-3">
+        <Link
+          href="/transcription"
+          className="rounded-full bg-zinc-900 px-6 py-3 text-center font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        >
+          Open Transcription
+        </Link>
+        <Link
+          href="/playground"
+          className="rounded-full bg-purple-600 px-6 py-3 text-center font-medium text-white transition-colors hover:bg-purple-700"
+        >
+          Voice Playground
+        </Link>
+      </div>
     </div>
   );
 }
