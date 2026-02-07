@@ -8,8 +8,8 @@ const ebGaramond = EB_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "grape",
-  description: "grape",
+  title: "Grape - Meeting Transcription",
+  description: "Real-time meeting transcription powered by Cartesia",
 };
 
 export default function RootLayout({
