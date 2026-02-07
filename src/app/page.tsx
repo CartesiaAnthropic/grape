@@ -281,7 +281,7 @@ export default function Home() {
           height: "367px",
           left: "50%",
           top: "50%",
-          transform: `translate(-50%, -50%) scale(${started ? 1.45 * (0.875 + micLevel * 0.25) : 0.42})`,
+          transform: `translate(-50%, -50%) scale(${started ? 1.45 * (0.825 + micLevel * 0.35) : 0.42})`,
           opacity: 1,
           transition: started
             ? "transform 0.15s ease-out"
@@ -438,7 +438,7 @@ export default function Home() {
               Scale
             </span>
             <span className="text-[10px] font-mono" style={{ color: "rgba(255,255,255,0.35)" }}>
-              {started ? (1.45 * (0.875 + micLevel * 0.25)).toFixed(2) : "0.42"}x
+              {started ? (1.45 * (0.825 + micLevel * 0.35)).toFixed(2) : "0.42"}x
             </span>
           </div>
         </div>
