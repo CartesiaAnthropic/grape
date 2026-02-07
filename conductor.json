@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "setup": "./scripts/setup-env.sh && pnpm install",
+    "run": "pnpm dev"
+  }
+}
