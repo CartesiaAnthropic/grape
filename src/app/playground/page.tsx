@@ -17,14 +17,13 @@ const STT_ENCODING = "pcm_s16le";
 const STT_LANGUAGE = "en";
 
 // TTS config
-const TTS_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"; // Barbershop Man
-const TTS_RESPONSE = "I just sent an email to all the meeting attendees.";
-const KEYWORD = "grape";
+const TTS_VOICE_ID = "a01c369f-6d2d-4185-bc20-b32c225eab70"; // Fiona - chirpy British female
 
 export default function Playground() {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +41,12 @@ export default function Playground() {
   const isSpeakingRef = useRef(false);
   const savedOnMessageRef = useRef<((e: MessageEvent) => void) | null>(null);
 
-  const speakResponse = useCallback(async () => {
+  // LLM refs
+  const isProcessingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const transcriptsRef = useRef<TranscriptEntry[]>([]);
+
+  const speakTTS = useCallback(async (message: string) => {
     if (!ttsWsRef.current || !playerRef.current) {
       console.warn("[Grape] TTS not initialized, skipping response");
       return;
@@ -52,7 +56,7 @@ export default function Playground() {
       return;
     }
 
-    console.log("[Grape] Keyword detected! Speaking response...");
+    console.log("[Grape] Speaking:", message);
     setIsSpeaking(true);
     isSpeakingRef.current = true;
 
@@ -65,13 +69,13 @@ export default function Playground() {
     try {
       const { source } = await ttsWsRef.current.send({
         modelId: "sonic-2",
-        transcript: TTS_RESPONSE,
+        transcript: message,
         voice: { mode: "id", id: TTS_VOICE_ID },
         language: "en",
       });
 
       await playerRef.current.play(source);
-      console.log("[Grape] Finished speaking response");
+      console.log("[Grape] Finished speaking");
     } catch (err) {
       console.error("[Grape] TTS playback failed:", err);
     } finally {
@@ -84,6 +88,87 @@ export default function Playground() {
       isSpeakingRef.current = false;
     }
   }, []);
+
+  const sendToLLM = useCallback(async (allTranscripts: TranscriptEntry[]) => {
+    if (isProcessingRef.current || isSpeakingRef.current) {
+      console.log("[Grape] Skipping LLM call: already processing or speaking");
+      return;
+    }
+
+    const fullTranscript = allTranscripts
+      .map((t) => t.text)
+      .join(" ");
+
+    if (!fullTranscript.trim()) return;
+
+    console.log("[Grape] Sending transcript to LLM...");
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    try {
+      const res = await fetch("/api/playground", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: fullTranscript }),
+        signal: abortController.signal,
+      });
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let speakMessage: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") break;
+
+          try {
+            const data = JSON.parse(payload);
+
+            if (data.type === "tool_use" && data.name?.endsWith("speak_to_user")) {
+              speakMessage = data.input?.message;
+              console.log("[Grape] LLM wants to speak:", speakMessage);
+            }
+
+            if (data.type === "text") {
+              console.log("[Grape] LLM:", data.text);
+            }
+
+            if (data.type === "error") {
+              console.error("[Grape] LLM error:", data.text);
+            }
+          } catch {
+            // skip malformed JSON lines
+          }
+        }
+      }
+
+      // If the LLM called speak_to_user, play the message via TTS
+      if (speakMessage) {
+        await speakTTS(speakMessage);
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        console.error("[Grape] LLM request failed:", err);
+      }
+    } finally {
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+      abortControllerRef.current = null;
+    }
+  }, [speakTTS]);
 
   const stop = useCallback(() => {
     console.log("[Grape] Stopping recording...");
@@ -120,14 +205,23 @@ export default function Playground() {
     isSpeakingRef.current = false;
     savedOnMessageRef.current = null;
 
+    // LLM cleanup
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    isProcessingRef.current = false;
+
     setIsRecording(false);
     setIsSpeaking(false);
+    setIsProcessing(false);
     setPartialText("");
   }, []);
 
   const start = useCallback(async () => {
     setError(null);
     setIsConnecting(true);
+    transcriptsRef.current = [];
 
     try {
       // 1. Get access token from our API route
@@ -203,13 +297,12 @@ export default function Playground() {
                 isFinal: true,
                 timestamp: new Date(),
               };
-              setTranscripts((prev) => [...prev, entry]);
+              transcriptsRef.current = [...transcriptsRef.current, entry];
+              setTranscripts(transcriptsRef.current);
               console.log("[Grape] FINAL:", text);
 
-              // Keyword detection
-              if (text.toLowerCase().includes(KEYWORD) && !isSpeakingRef.current) {
-                speakResponse();
-              }
+              // Send to LLM for decision
+              sendToLLM(transcriptsRef.current);
             }
             setPartialText("");
           } else {
@@ -291,7 +384,7 @@ export default function Playground() {
       setIsConnecting(false);
       stop();
     }
-  }, [stop, speakResponse]);
+  }, [stop, sendToLLM]);
 
   return (
     <div className="flex min-h-screen flex-col bg-zinc-50 font-sans dark:bg-zinc-950">
@@ -300,7 +393,7 @@ export default function Playground() {
           Grape Playground
         </h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Say &quot;Grape&quot; to trigger a voice response
+          Say &quot;Hey Grape&quot; to get a voice response
         </p>
       </header>
 
@@ -330,9 +423,15 @@ export default function Playground() {
             )}
           </button>
 
-          {isRecording && !isSpeaking && (
+          {isRecording && !isSpeaking && !isProcessing && (
             <span className="text-sm text-zinc-500 dark:text-zinc-400">
               Listening...
+            </span>
+          )}
+
+          {isProcessing && !isSpeaking && (
+            <span className="text-sm text-blue-600 dark:text-blue-400">
+              Thinking...
             </span>
           )}
 
