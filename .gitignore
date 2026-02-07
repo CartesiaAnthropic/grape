@@ -24,6 +24,17 @@
 .DS_Store
 *.pem
 
+# IDEs and editors
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
 # debug
 npm-debug.log*
 yarn-debug.log*
