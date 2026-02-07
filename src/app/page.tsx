@@ -157,7 +157,7 @@ const PRESETS: { name: string; colors: ColorSet; swatch: string; params?: Partia
 
 export default function Home() {
   const [started, setStarted] = useState(false);
-  const [activePreset, setActivePreset] = useState(0);
+  const [activePreset, setActivePreset] = useState(6);
   const [useCustom, setUseCustom] = useState(false);
   const [customColors, setCustomColors] = useState<ColorSet>(["#7db848", "#c8b840", "#f5c842"]);
   const [customParams, setCustomParams] = useState({
