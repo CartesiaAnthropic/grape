@@ -19,6 +19,10 @@ const STT_LANGUAGE = "en";
 // TTS config
 const TTS_VOICE_ID = "a01c369f-6d2d-4185-bc20-b32c225eab70"; // Fiona - chirpy British female
 
+// LLM debounce config
+const LLM_DEBOUNCE_MS = 3000; // Wait for user to finish speaking before sending to LLM
+const LLM_RETRIGGER_MS = 500; // Shorter delay for re-processing entries that arrived during LLM call
+
 export default function Playground() {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -153,18 +157,17 @@ export default function Playground() {
 
             if (data.type === "tool_use") {
               toolUsed = true;
-            }
 
-            if (data.type === "tool_use" && data.name?.includes("speak_to_user")) {
-              console.log("[Grape] LLM wants to speak:", data.input?.message);
-              // Fire TTS immediately — don't wait for stream to finish
-              speakTTS(data.input?.message);
-            }
+              if (data.name?.includes("speak_to_user")) {
+                console.log("[Grape] LLM wants to speak:", data.input?.message);
+                speakTTS(data.input?.message);
+              }
 
-            if (data.type === "tool_use" && data.name?.startsWith("mcp__linear__")) {
-              const shortName = data.name.replace("mcp__linear__", "");
-              console.log("[Grape] Linear action:", shortName, data.input);
-              setLinearActions((prev) => [...prev, { name: shortName, input: data.input }]);
+              if (data.name?.startsWith("mcp__linear__")) {
+                const shortName = data.name.replace("mcp__linear__", "");
+                console.log("[Grape] Linear action:", shortName, data.input);
+                setLinearActions((prev) => [...prev, { name: shortName, input: data.input }]);
+              }
             }
 
             if (data.type === "text") {
@@ -175,7 +178,7 @@ export default function Playground() {
               console.error("[Grape] LLM error:", data.text);
             }
           } catch {
-            // skip malformed JSON lines
+            // Malformed SSE payload — skip silently (common with partial chunks)
           }
         }
       }
@@ -203,7 +206,7 @@ export default function Playground() {
         if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
         sendTimerRef.current = setTimeout(() => {
           sendToLLM(transcriptsRef.current);
-        }, 500);
+        }, LLM_RETRIGGER_MS);
       }
     }
   }, [speakTTS]);
@@ -350,7 +353,7 @@ export default function Playground() {
               if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
               sendTimerRef.current = setTimeout(() => {
                 sendToLLM(transcriptsRef.current);
-              }, 3000);
+              }, LLM_DEBOUNCE_MS);
             }
             setPartialText("");
           } else {
