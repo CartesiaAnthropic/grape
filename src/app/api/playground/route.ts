@@ -1,181 +1,112 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { getResearchState, canStartResearch } from "@/app/lib/research-state";
-import { runBackgroundResearch } from "@/app/lib/research-runner";
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  playgroundToolsServer,
+  mcpServers,
+  playgroundAllowedTools,
+} from "./tools";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
-const client = new Anthropic();
+const SYSTEM_PROMPT = `You are Grape, a voice AI assistant embedded in product team meetings. You listen to real-time meeting transcripts.
 
-// --- State-specific prompts ---
-// Each research state gets a different system prompt so Grape behaves differently.
+IMPORTANT RULES:
+- You should ONLY respond when someone directly addresses you by name. Because this is voice-transcribed text, your name may appear as "Grape", "grape", "gray", "grey", "great", "k-grape", "a grape", "hey grape", or similar phonetic variations.
+- When addressed, use the speak_to_user tool to respond aloud. Keep your response brief and natural for voice — 1-2 sentences maximum.
+- If nobody is addressing you, do NOT use any tools. Simply respond with "No action needed."
+- EXCEPTION: If the transcript contains a "[NEW INSTRUCTION]" section, this is a follow-up to your previous action. Act on it immediately WITHOUT requiring the wake word. The user is continuing the conversation with you. Use the "[ALREADY PROCESSED]" section for context about what you previously did.
+- You are helpful with product management topics: feature discussions, sprint planning, action items, meeting summaries, prioritization, etc.
+- Never speak unprompted. Only respond when explicitly addressed.
 
-const SPEAK_TOOL: Anthropic.Tool = {
-  name: "speak_to_user",
-  description:
-    "Speak a message aloud to the meeting participants. Use this when someone directly addresses Grape. Keep responses brief — 1-2 sentences for natural voice delivery.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      message: {
-        type: "string",
-        description: "The message to speak aloud to the user",
-      },
-    },
-    required: ["message"],
-  },
-};
+LINEAR INTEGRATION:
+- You have access to Linear project management tools via MCP.
+- When someone asks you to create an issue, update a ticket, check status, or perform any Linear action, use the appropriate Linear MCP tool.
+- The transcript comes from speech-to-text and may contain minor grammar errors or filler words. Clean up grammar and capitalize properly, but stay faithful to the user's actual words. Do NOT invent new titles or heavily reinterpret — use what the user said. For example, "fix the production bug in response API" should become "Fix production bug in response API", not something unrelated.
+- When the user specifies a status (e.g., "assign to todo", "mark as in progress"), you MUST first call the Linear MCP tool to list the team's workflow states, find the matching state ID, then pass that state ID when creating or updating the issue. Do NOT pass human-readable strings like "to do" — Linear requires the actual state UUID.
+- When the user specifies a priority (e.g., "urgent", "high priority"), assignee (e.g., "assign to John"), or label (e.g., "label it as a bug"), honor those requests by setting the corresponding fields when creating or updating the Linear issue.
+- NEVER ask the user for clarification or follow-up questions. This is a hackathon demo — just act immediately. Use your best judgment to interpret the request, pick reasonable defaults for any missing fields (default team, "Normal" priority, backlog status), and create the issue right away. Do NOT say things like "Could you repeat that?" or "What priority should it be?" — just do it.
+- After executing a Linear action, ALWAYS use speak_to_user to confirm what you did. For example: "Done! I've created a Linear issue titled 'Fix timeout issue on mobile' and assigned it to the backlog."
+- Common Linear actions: create issues, search issues, update issue status/priority/assignee, list projects, list teams.
 
-const RESEARCH_TOOL: Anthropic.Tool = {
-  name: "start_research",
-  description:
-    "Start background research on a factual question detected in the meeting. This runs silently — do NOT speak to users when calling this.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      question: {
-        type: "string",
-        description: "The factual question to research",
-      },
-    },
-    required: ["question"],
-  },
-};
-
-// IDLE: Scan the full conversation for researchable questions
-const IDLE_PROMPT = `You are Grape, a voice AI assistant embedded in product team meetings. You are OVERHEARING the meeting — you are NOT a participant.
-
-Read the FULL meeting transcript below. Your job is to detect researchable questions.
-
-RULES — follow strictly, do NOT generate long text:
-1. If there is a researchable question ANYWHERE in the transcript: Call start_research with the question. Do NOT speak. Do NOT output text.
-2. If someone addresses you by name ("Grape", "Hey Grape") in the [LATEST SEGMENT]: Call speak_to_user with a 1-2 sentence response.
-3. Otherwise: Output ONLY "No action needed."
-
-WHEN TO CALL start_research — be AGGRESSIVE:
-- ANY comparison: "X or Y?", "X vs Y", "should we use X or Y", "which is better"
-- Market/stats: "What's the market size for X?"
-- Technical: "How does X handle Y?", "What are best practices for X?"
-- Explicit: "Let's research X", "We should look into X"
-- Examples that MUST trigger: "GitHub or GitLab", "Anthropic or OpenAI", "React or Vue", "Postgres or MySQL"
-- When in doubt, START RESEARCH. Better to research too much than miss a question.
-
-NOT researchable: pure opinions ("Do you like our logo?"), questions addressed to you by name (respond verbally instead).`;
-
-// DONE: Research complete — listen for "Hey Grape" to present findings
-function buildDonePrompt(query: string, result: string): string {
-  return `You are Grape, a voice AI assistant embedded in product team meetings. You are OVERHEARING the meeting.
-
-Research has been completed on: "${query}"
-
-RESEARCH FINDINGS:
-${result}
-
-RULES — follow strictly, do NOT generate long text:
-1. If someone addresses you by name ("Grape", "Hey Grape", "what did you find", "any results") in the [LATEST SEGMENT]: Call speak_to_user with a concise 2-3 sentence summary of the research findings above.
-2. Otherwise: Output ONLY "No action needed."
-
-IMPORTANT: Only respond to the [LATEST SEGMENT]. Ignore the conversation history — it was already processed.`;
-}
-
-function getPromptAndTools(): { system: string; tools: Anthropic.Tool[] } {
-  const researchState = getResearchState();
-
-  if (researchState.status === "done" && researchState.result) {
-    return {
-      system: buildDonePrompt(researchState.query!, researchState.result),
-      tools: [SPEAK_TOOL],
-    };
-  }
-
-  // idle or error — scan for research questions
-  return {
-    system: IDLE_PROMPT,
-    tools: [SPEAK_TOOL, RESEARCH_TOOL],
-  };
-}
-
-function buildUserMessage(history: string, latest: string): string {
-  let msg = "";
-  if (history.trim()) {
-    msg += `[CONVERSATION HISTORY]\n${history}\n\n`;
-  }
-  msg += `[LATEST SEGMENT]\n${latest}`;
-  return msg;
-}
+CONTEXT:
+- You are in a live product team meeting
+- Multiple people may be speaking; only respond when someone addresses you
+- Respond conversationally, as if speaking in a meeting
+- Bias toward action — create the issue with your best interpretation rather than asking questions`;
 
 export async function POST(req: Request) {
-  const { history, latest } = await req.json();
+  const { transcript } = await req.json();
 
-  const { system, tools } = getPromptAndTools();
+  if (!transcript || typeof transcript !== "string") {
+    return new Response(JSON.stringify({ error: "transcript is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const response = client.messages.stream({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 300,
-        system,
-        tools,
-        messages: [{ role: "user", content: buildUserMessage(history ?? "", latest) }],
-      });
-
-      response.on("text", (text) => {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "text", text })}\n\n`
-          )
-        );
-      });
-
-      // contentBlock fires with the COMPLETE block — tool_use includes full input
-      response.on("contentBlock", (block) => {
-        if (block.type === "tool_use") {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({
-                type: "tool_use",
-                name: block.name,
-                input: block.input,
-              })}\n\n`
-            )
-          );
-
-          // Handle start_research tool server-side
-          if (block.name === "start_research") {
-            const input = block.input as { question: string };
-            if (canStartResearch()) {
-              runBackgroundResearch(input.question);
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({
-                    type: "research_status",
-                    status: "researching",
-                    question: input.question,
-                  })}\n\n`
-                )
-              );
-            }
-          }
-        }
-      });
+      const sendSSE = (data: Record<string, unknown>) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
 
       try {
-        await response.finalMessage();
+        async function* promptStream(): AsyncGenerator<SDKUserMessage> {
+          yield {
+            type: "user" as const,
+            session_id: "",
+            parent_tool_use_id: null,
+            message: {
+              role: "user" as const,
+              content: transcript,
+            },
+          };
+        }
+
+        const agentStream = query({
+          prompt: promptStream(),
+          options: {
+            model: "claude-haiku-4-5-20251001",
+            mcpServers: {
+              "playground-tools": playgroundToolsServer,
+              ...mcpServers,
+            },
+            allowedTools: playgroundAllowedTools,
+            maxTurns: 10,
+            systemPrompt: SYSTEM_PROMPT,
+            env: {
+              ...(process.env as Record<string, string>),
+              ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!,
+            },
+            stderr: (data: string) => console.error("[playground-sdk]", data),
+          },
+        });
+
+        for await (const msg of agentStream) {
+          console.log(`[playground] msg type=${msg.type}${"subtype" in msg ? ` subtype=${(msg as any).subtype}` : ""}`);
+
+          if (msg.type === "assistant") {
+            for (const block of msg.message.content) {
+              if (block.type === "text" && block.text) {
+                sendSSE({ type: "text", text: block.text });
+              }
+              if (block.type === "tool_use") {
+                sendSSE({ type: "tool_use", name: block.name, input: block.input });
+              }
+            }
+          }
+
+          if (msg.type === "result" && msg.subtype === "success") {
+            sendSSE({ type: "result", text: msg.result });
+          }
+
+          if (msg.type === "result" && msg.subtype !== "success") {
+            sendSSE({ type: "error", text: `Agent stopped: ${msg.subtype}` });
+          }
+        }
       } catch (err) {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({
-              type: "error",
-              text: String(err),
-            })}\n\n`
-          )
-        );
+        sendSSE({ type: "error", text: err instanceof Error ? err.message : String(err) });
       } finally {
-        controller.enqueue(
-          encoder.encode(
-            `data: ${JSON.stringify({ type: "result", text: "done" })}\n\n`
-          )
-        );
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
