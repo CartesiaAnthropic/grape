@@ -27,7 +27,7 @@ const STT_ENCODING = "pcm_s16le";
 const STT_LANGUAGE = "en";
 
 // TTS config
-const TTS_VOICE_ID = "a01c369f-6d2d-4185-bc20-b32c225eab70"; // Fiona - chirpy British female
+const TTS_VOICE_ID = "6ccbfb76-1fc6-48f7-b71d-91ac6298247b"; // Tessa - American female
 
 // LLM debounce config
 const LLM_DEBOUNCE_MS = 3000; // Wait for user to finish speaking before sending to LLM
@@ -259,6 +259,10 @@ export default function Playground() {
   ]);
   const [customParams, setCustomParams] = useState(DEFAULT_PARAMS);
   const [showCustomEditor, setShowCustomEditor] = useState(false);
+  const [showDevMenu, setShowDevMenu] = useState(false);
+  const [researchTitle, setResearchTitle] = useState<string | null>(null);
+  const [isLinearActive, setIsLinearActive] = useState(false);
+  const [linearToast, setLinearToast] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -293,7 +297,13 @@ export default function Playground() {
       try {
         const res = await fetch("/api/research-status");
         const data = await res.json();
+        if (data.status === "done" && researchStatusRef.current !== "done") {
+          new Audio("/microwave-ding.mp3").play().catch(() => {});
+        }
         setResearchStatus(data.status);
+        if (data.title) {
+          setResearchTitle(data.title);
+        }
         // Log new progress entries to console
         if (data.progress && data.progress.length > lastProgressCountRef.current) {
           const newEntries = data.progress.slice(lastProgressCountRef.current);
@@ -317,14 +327,17 @@ export default function Playground() {
   const NEON_INDEX = 9;
   const RESEARCHING_INDEX = 0;
   const RESEARCH_DONE_INDEX = 2;
+  const VIOLET_SUNRISE_INDEX = 3;
 
   const effectivePreset = isSpeaking
     ? CANDY_INDEX
-    : researchStatus === "researching"
-      ? RESEARCHING_INDEX
-      : researchStatus === "done"
-        ? RESEARCH_DONE_INDEX
-        : activePreset;
+    : isLinearActive
+      ? VIOLET_SUNRISE_INDEX
+      : researchStatus === "researching"
+        ? RESEARCHING_INDEX
+        : researchStatus === "done"
+          ? RESEARCH_DONE_INDEX
+          : activePreset;
 
   const targetColors =
     !isRecording ? IDLE_COLORS : useCustom && !isSpeaking ? customColors : PRESETS[effectivePreset].colors;
@@ -453,6 +466,7 @@ export default function Playground() {
                   // After sharing research findings, reset back to idle
                   if (researchStatusRef.current === "done") {
                     setResearchStatus("idle");
+                    setResearchTitle(null);
                     fetch("/api/research-status", { method: "POST" }).catch(() => {});
                   }
                 }
@@ -461,6 +475,12 @@ export default function Playground() {
                   const shortName = data.name.replace("mcp__linear__", "");
                   console.log("[Grape] Linear action:", shortName, data.input);
                   setLinearActions((prev) => [...prev, { name: shortName, input: data.input }]);
+                  setIsLinearActive(true);
+                  setLinearToast("Linear ticket created");
+                  setTimeout(() => {
+                    setIsLinearActive(false);
+                    setLinearToast(null);
+                  }, 5000);
                 }
               }
 
@@ -582,6 +602,7 @@ export default function Playground() {
     lastProcessedIndexRef.current = 0;
     micLevelSmoothRef.current = 0;
     setResearchStatus("idle");
+    setResearchTitle(null);
     setLinearActions([]);
 
     // Reset server-side research state from any previous session
@@ -957,6 +978,7 @@ export default function Playground() {
               Show Transcript
             </button>
           )}
+
           <button
             onClick={isRecording ? stop : start}
             disabled={isConnecting}
@@ -976,12 +998,105 @@ export default function Playground() {
       </div>
 
       <div
+        className="pointer-events-none fixed left-0 right-0 z-40 flex justify-center transition-all duration-500 ease-out"
+        style={{
+          top: "22%",
+          opacity: researchStatus === "done" && researchTitle && !linearToast ? 1 : 0,
+          transform: researchStatus === "done" && researchTitle && !linearToast ? "translateY(0)" : "translateY(-12px)",
+        }}
+      >
+        <div
+          className="rounded-full px-6 py-3"
+          style={{
+            backgroundColor: "rgba(255, 255, 255, 0.92)",
+            backdropFilter: "blur(10px)",
+            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.08)",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "20px",
+              fontWeight: 500,
+              color: "#1a1a1a",
+              fontFamily:
+                "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+            }}
+          >
+            {researchTitle}
+          </span>
+        </div>
+      </div>
+
+      <div
+        className="pointer-events-none fixed left-0 right-0 z-40 flex justify-center transition-all duration-500 ease-out"
+        style={{
+          top: "28%",
+          opacity: linearToast ? 1 : 0,
+          transform: linearToast ? "translateY(0)" : "translateY(-12px)",
+        }}
+      >
+        <div
+          className="flex items-center gap-2 rounded-full px-5 py-2"
+          style={{
+            backgroundColor: "rgba(88, 110, 235, 0.92)",
+            backdropFilter: "blur(10px)",
+            boxShadow: "0 4px 20px rgba(88, 110, 235, 0.25)",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "14px",
+              fontWeight: 500,
+              color: "#fff",
+              fontFamily:
+                "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+            }}
+          >
+            {linearToast}
+          </span>
+        </div>
+      </div>
+
+      {!showDevMenu && (
+        <button
+          onClick={() => setShowDevMenu(true)}
+          className="fixed bottom-4 right-4 z-50 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full"
+          style={{
+            backgroundColor: "rgba(0, 0, 0, 0.55)",
+            backdropFilter: "blur(12px)",
+            color: "rgba(255,255,255,0.5)",
+            fontSize: "14px",
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+          title="Open dev menu"
+        >
+          &#9881;
+        </button>
+      )}
+
+      <div
         className="fixed bottom-4 right-4 z-50 flex max-h-[90vh] min-w-[160px] flex-col gap-2 overflow-y-auto rounded-xl p-3"
         style={{
           backgroundColor: "rgba(0, 0, 0, 0.75)",
           backdropFilter: "blur(12px)",
+          display: showDevMenu ? "flex" : "none",
         }}
       >
+        <button
+          onClick={() => setShowDevMenu(false)}
+          className="flex cursor-pointer items-center justify-end"
+          style={{
+            background: "none",
+            border: "none",
+            color: "rgba(255,255,255,0.4)",
+            fontSize: "16px",
+            padding: 0,
+            lineHeight: 1,
+          }}
+          title="Collapse dev menu"
+        >
+          &times;
+        </button>
         {isRecording && (
           <>
             <span
