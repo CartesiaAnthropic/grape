@@ -169,6 +169,24 @@ const PRESETS: {
   swatch: string;
   params?: Partial<ShaderParams>;
 }[] = [
+  {
+    name: "Researching",
+    colors: ["#b0ff6b", "#4dc3ff", "#32fb54"],
+    swatch: "#4dc3ff",
+    params: { positionY: -1.2, rotationZ: 97, uSpeed: 0.5, uStrength: 1.7, uDensity: 1.4 },
+  },
+  {
+    name: "Purple Researching",
+    colors: ["#b0ff6b", "#ae33f0", "#32fb54"],
+    swatch: "#ae33f0",
+    params: { positionY: -1.2, rotationZ: 97, uSpeed: 0.5, uStrength: 1.7, uDensity: 1.4 },
+  },
+  {
+    name: "Purple Researching 2",
+    colors: ["#b0ff6b", "#ba32ec", "#32fb54"],
+    swatch: "#ba32ec",
+    params: { positionY: -1.2, rotationZ: 97, uSpeed: 0.5, uStrength: 1.7, uDensity: 1.4 },
+  },
   { name: "Green", colors: ["#98d760", "#89b946", "#f0edd4"], swatch: "#98d760" },
   { name: "Sunshine", colors: ["#f5c842", "#e8a832", "#7db848"], swatch: "#f5c842" },
   { name: "Sunrise", colors: ["#7db848", "#c8b840", "#f5c842"], swatch: "#e8a832" },
@@ -226,7 +244,7 @@ export default function Playground() {
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true);
   const [micLevel, setMicLevel] = useState(0);
 
-  const [activePreset, setActivePreset] = useState(6);
+  const [activePreset, setActivePreset] = useState(9);
   const [useCustom, setUseCustom] = useState(false);
   const [customColors, setCustomColors] = useState<ColorSet>([
     "#7db848",
@@ -255,15 +273,18 @@ export default function Playground() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptsRef = useRef<TranscriptEntry[]>([]);
 
+  const CANDY_INDEX = 10;
+  const effectivePreset = isSpeaking ? CANDY_INDEX : activePreset;
+
   const targetColors =
-    !isRecording ? IDLE_COLORS : useCustom ? customColors : PRESETS[activePreset].colors;
+    !isRecording ? IDLE_COLORS : useCustom && !isSpeaking ? customColors : PRESETS[effectivePreset].colors;
   const [c1, c2, c3] = useSmoothColors(targetColors, 1500);
 
   const targetParams = !isRecording
     ? { ...DEFAULT_PARAMS, uSpeed: 0.2 }
-    : useCustom
+    : useCustom && !isSpeaking
       ? customParams
-      : { ...DEFAULT_PARAMS, ...PRESETS[activePreset].params };
+      : { ...DEFAULT_PARAMS, ...PRESETS[effectivePreset].params };
   const params = useSmoothParams(targetParams, 1500);
 
   const speakTTS = useCallback(async (message: string) => {
