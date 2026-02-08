@@ -1,6 +1,8 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { runBackgroundResearch } from "@/app/lib/research-runner";
+import { canStartResearch } from "@/app/lib/research-state";
 
 const speakToUser = tool(
   "speak_to_user",
@@ -17,10 +19,33 @@ const speakToUser = tool(
   }
 );
 
+const startResearch = tool(
+  "start_research",
+  "Start background research on a factual question detected in the meeting. This runs silently — do NOT speak to users when calling this.",
+  {
+    question: z.string().describe("The factual question to research"),
+  },
+  async (args) => {
+    if (!canStartResearch()) {
+      return {
+        content: [
+          { type: "text" as const, text: "Research already in progress." },
+        ],
+      };
+    }
+    runBackgroundResearch(args.question);
+    return {
+      content: [
+        { type: "text" as const, text: `Research started: "${args.question}"` },
+      ],
+    };
+  }
+);
+
 export const playgroundToolsServer = createSdkMcpServer({
   name: "playground-tools",
   version: "1.0.0",
-  tools: [speakToUser],
+  tools: [speakToUser, startResearch],
 });
 
 export const mcpServers: Record<string, McpServerConfig> = {
