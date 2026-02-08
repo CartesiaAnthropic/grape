@@ -3,6 +3,7 @@ export type ResearchStatus = "idle" | "researching" | "done" | "error";
 export interface ResearchState {
   status: ResearchStatus;
   query: string | null;
+  title: string | null;
   result: string | null;
   error: string | null;
   progress: string[];
@@ -13,6 +14,7 @@ export interface ResearchState {
 const DEFAULT_STATE: ResearchState = {
   status: "idle",
   query: null,
+  title: null,
   result: null,
   error: null,
   progress: [],
@@ -55,12 +57,18 @@ export function startResearch(query: string): void {
   setState({
     status: "researching",
     query,
+    title: null,
     result: null,
     error: null,
     progress: ["Research started"],
     startedAt: Date.now(),
     completedAt: null,
   });
+}
+
+export function setResearchTitle(title: string): void {
+  const s = state();
+  setState({ ...s, title });
 }
 
 export function completeResearch(result: string): void {

@@ -6,6 +6,7 @@ import {
   completeResearch,
   failResearch,
   addProgress,
+  setResearchTitle,
 } from "./research-state";
 
 const RESEARCH_SYSTEM_PROMPT = `You are a research assistant. You have been given a question that came up in a product team meeting.
@@ -13,7 +14,12 @@ Your job is to research the topic thoroughly using web search and web fetch tool
 
 Provide a clear, concise summary of your findings (3-5 sentences max) that would be useful to share in the meeting.
 Focus on factual, actionable information. Include specific numbers, dates, or names when relevant.
-Do NOT use markdown formatting — your output will be spoken aloud.`;
+Do NOT use markdown formatting — your output will be spoken aloud.
+
+IMPORTANT: The very last line of your response MUST be a short title (2-5 words max) summarizing the topic, prefixed with "TITLE: ". For example:
+TITLE: Claude API Pricing
+TITLE: React vs Vue
+TITLE: Stripe Market Share`;
 
 export function runBackgroundResearch(question: string): boolean {
   if (!canStartResearch()) {
@@ -83,11 +89,27 @@ export function runBackgroundResearch(question: string): boolean {
         }
       }
 
-      const finalResult =
+      const rawResult =
         resultText.trim() || "Research completed but no results were found.";
+
+      // Parse title from the last line if present
+      const lines = rawResult.split("\n");
+      const lastLine = lines[lines.length - 1]?.trim() || "";
+      let title: string | null = null;
+      let finalResult = rawResult;
+
+      if (lastLine.startsWith("TITLE:")) {
+        title = lastLine.replace("TITLE:", "").trim();
+        finalResult = lines.slice(0, -1).join("\n").trim();
+      }
+
+      if (title) {
+        setResearchTitle(title);
+      }
       completeResearch(finalResult);
       console.log(
         "[research] Completed:",
+        title ? `[${title}]` : "",
         finalResult.substring(0, 200) + "..."
       );
     } catch (err) {
