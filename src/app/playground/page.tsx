@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { CartesiaClient, WebPlayer } from "@cartesia/cartesia-js";
 
 interface TranscriptEntry {
@@ -27,6 +27,7 @@ export default function Playground() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [researchStatus, setResearchStatus] = useState<string>("idle");
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -45,6 +46,36 @@ export default function Playground() {
   const isProcessingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptsRef = useRef<TranscriptEntry[]>([]);
+  const researchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastProgressCountRef = useRef(0);
+
+  // Poll research status while recording
+  useEffect(() => {
+    if (!isRecording) return;
+    lastProgressCountRef.current = 0;
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch("/api/research-status");
+        const data = await res.json();
+        setResearchStatus(data.status);
+        // Log new progress entries to console
+        if (data.progress && data.progress.length > lastProgressCountRef.current) {
+          const newEntries = data.progress.slice(lastProgressCountRef.current);
+          for (const entry of newEntries) {
+            console.log("[Grape Research]", entry);
+          }
+          lastProgressCountRef.current = data.progress.length;
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 2000);
+    researchPollRef.current = poll;
+    return () => {
+      clearInterval(poll);
+      researchPollRef.current = null;
+    };
+  }, [isRecording]);
 
   const speakTTS = useCallback(async (message: string) => {
     if (!ttsWsRef.current || !playerRef.current) {
@@ -95,11 +126,12 @@ export default function Playground() {
       return;
     }
 
-    const fullTranscript = allTranscripts
-      .map((t) => t.text)
-      .join(" ");
+    if (allTranscripts.length === 0) return;
 
-    if (!fullTranscript.trim()) return;
+    const latest = allTranscripts[allTranscripts.length - 1].text;
+    const history = allTranscripts.slice(0, -1).map((t) => t.text).join(" ");
+
+    if (!latest.trim()) return;
 
     console.log("[Grape] Sending transcript to LLM...");
     isProcessingRef.current = true;
@@ -112,7 +144,7 @@ export default function Playground() {
       const res = await fetch("/api/playground", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: fullTranscript }),
+        body: JSON.stringify({ history, latest }),
         signal: abortController.signal,
       });
 
@@ -141,6 +173,11 @@ export default function Playground() {
               console.log("[Grape] LLM wants to speak:", data.input?.message);
               // Fire TTS immediately — don't wait for stream to finish
               speakTTS(data.input?.message);
+            }
+
+            if (data.type === "research_status") {
+              console.log("[Grape] Research started:", data.question);
+              setResearchStatus(data.status);
             }
 
             if (data.type === "text") {
@@ -423,22 +460,33 @@ export default function Playground() {
             )}
           </button>
 
-          {isRecording && !isSpeaking && !isProcessing && (
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              Listening...
-            </span>
-          )}
-
-          {isProcessing && !isSpeaking && (
-            <span className="text-sm text-blue-600 dark:text-blue-400">
-              Thinking...
-            </span>
-          )}
-
-          {isSpeaking && (
-            <span className="text-sm font-medium text-purple-600 dark:text-purple-400">
-              Grape is speaking...
-            </span>
+          {isRecording && (
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-3 w-3 rounded-full ${
+                  isSpeaking
+                    ? "bg-purple-500 animate-pulse"
+                    : isProcessing
+                      ? "bg-blue-500 animate-pulse"
+                      : researchStatus === "researching"
+                        ? "bg-yellow-500 animate-pulse"
+                        : researchStatus === "done"
+                          ? "bg-green-500"
+                          : "bg-zinc-400"
+                }`}
+              />
+              <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                {isSpeaking
+                  ? "Grape is speaking..."
+                  : isProcessing
+                    ? "Thinking..."
+                    : researchStatus === "researching"
+                      ? "Researching..."
+                      : researchStatus === "done"
+                        ? "Research ready — ask Grape!"
+                        : "Listening..."}
+              </span>
+            </div>
           )}
         </div>
 
