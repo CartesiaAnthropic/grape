@@ -241,6 +241,7 @@ export default function Playground() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [researchStatus, setResearchStatus] = useState<string>("idle");
   const [showTranscriptPanel, setShowTranscriptPanel] = useState(true);
   const [micLevel, setMicLevel] = useState(0);
 
@@ -272,9 +273,51 @@ export default function Playground() {
   const isProcessingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptsRef = useRef<TranscriptEntry[]>([]);
+  const researchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastProgressCountRef = useRef(0);
+  const researchStatusRef = useRef(researchStatus);
+  researchStatusRef.current = researchStatus;
+
+  // Poll research status while recording
+  useEffect(() => {
+    if (!isRecording) return;
+    lastProgressCountRef.current = 0;
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch("/api/research-status");
+        const data = await res.json();
+        setResearchStatus(data.status);
+        // Log new progress entries to console
+        if (data.progress && data.progress.length > lastProgressCountRef.current) {
+          const newEntries = data.progress.slice(lastProgressCountRef.current);
+          for (const entry of newEntries) {
+            console.log("[Grape Research]", entry);
+          }
+          lastProgressCountRef.current = data.progress.length;
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 2000);
+    researchPollRef.current = poll;
+    return () => {
+      clearInterval(poll);
+      researchPollRef.current = null;
+    };
+  }, [isRecording]);
 
   const CANDY_INDEX = 10;
-  const effectivePreset = isSpeaking ? CANDY_INDEX : activePreset;
+  const NEON_INDEX = 9;
+  const RESEARCHING_INDEX = 0;
+  const RESEARCH_DONE_INDEX = 2;
+
+  const effectivePreset = isSpeaking
+    ? CANDY_INDEX
+    : researchStatus === "researching"
+      ? RESEARCHING_INDEX
+      : researchStatus === "done"
+        ? RESEARCH_DONE_INDEX
+        : activePreset;
 
   const targetColors =
     !isRecording ? IDLE_COLORS : useCustom && !isSpeaking ? customColors : PRESETS[effectivePreset].colors;
@@ -339,9 +382,18 @@ export default function Playground() {
         return;
       }
 
-      const fullTranscript = allTranscripts.map((t) => t.text).join(" ");
+      // While researching, skip LLM calls — just keep transcribing
+      if (researchStatusRef.current === "researching") {
+        console.log("[Grape] Skipping LLM call: research in progress");
+        return;
+      }
 
-      if (!fullTranscript.trim()) return;
+      if (allTranscripts.length === 0) return;
+
+      const latest = allTranscripts[allTranscripts.length - 1].text;
+      const history = allTranscripts.slice(0, -1).map((t) => t.text).join(" ");
+
+      if (!latest.trim()) return;
 
       console.log("[Grape] Sending transcript to LLM...");
       isProcessingRef.current = true;
@@ -354,7 +406,7 @@ export default function Playground() {
         const res = await fetch("/api/playground", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: fullTranscript }),
+          body: JSON.stringify({ history, latest }),
           signal: abortController.signal,
         });
 
@@ -382,6 +434,11 @@ export default function Playground() {
               if (data.type === "tool_use" && data.name === "speak_to_user") {
                 console.log("[Grape] LLM wants to speak:", data.input?.message);
                 speakTTS(data.input?.message);
+                // After sharing research findings, reset back to idle (Neon)
+                if (researchStatusRef.current === "done") {
+                  setResearchStatus("idle");
+                  fetch("/api/research-status", { method: "POST" }).catch(() => {});
+                }
               }
 
               if (data.type === "text") {
@@ -390,6 +447,11 @@ export default function Playground() {
 
               if (data.type === "error") {
                 console.error("[Grape] LLM error:", data.text);
+              }
+
+              if (data.type === "research_status") {
+                console.log("[Grape] Research started:", data.question);
+                setResearchStatus(data.status);
               }
             } catch {
               // Skip malformed JSON lines.
@@ -470,6 +532,10 @@ export default function Playground() {
     setIsConnecting(true);
     transcriptsRef.current = [];
     micLevelSmoothRef.current = 0;
+    setResearchStatus("idle");
+
+    // Reset server-side research state from any previous session
+    fetch("/api/research-status", { method: "POST" }).catch(() => {});
 
     try {
       // 1. Get access token from our API route
@@ -827,6 +893,50 @@ export default function Playground() {
           backdropFilter: "blur(12px)",
         }}
       >
+        {isRecording && (
+          <>
+            <span
+              className="px-1 text-[11px] font-medium uppercase tracking-wider"
+              style={{ color: "rgba(255,255,255,0.4)" }}
+            >
+              Status
+            </span>
+            <div className="flex items-center gap-2 px-1">
+              <span
+                className={`h-3 w-3 shrink-0 rounded-full ${
+                  isSpeaking
+                    ? "bg-purple-500 animate-pulse"
+                    : isProcessing
+                      ? "bg-blue-500 animate-pulse"
+                      : researchStatus === "researching"
+                        ? "bg-yellow-500 animate-pulse"
+                        : researchStatus === "done"
+                          ? "bg-green-500"
+                          : "bg-zinc-400"
+                }`}
+              />
+              <span className="text-sm" style={{ color: "rgba(255,255,255,0.7)" }}>
+                {isSpeaking
+                  ? "Speaking..."
+                  : isProcessing
+                    ? "Thinking..."
+                    : researchStatus === "researching"
+                      ? "Researching..."
+                      : researchStatus === "done"
+                        ? "Research ready"
+                        : "Listening..."}
+              </span>
+            </div>
+            <div
+              style={{
+                height: "1px",
+                backgroundColor: "rgba(255,255,255,0.1)",
+                margin: "4px 0",
+              }}
+            />
+          </>
+        )}
+
         <span
           className="px-1 text-[11px] font-medium uppercase tracking-wider"
           style={{ color: "rgba(255,255,255,0.4)" }}
