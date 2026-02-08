@@ -27,6 +27,7 @@ export default function Playground() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [partialText, setPartialText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [linearActions, setLinearActions] = useState<Array<{ name: string; input: unknown }>>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -45,6 +46,8 @@ export default function Playground() {
   const isProcessingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptsRef = useRef<TranscriptEntry[]>([]);
+  const lastProcessedIndexRef = useRef(0);
+  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const speakTTS = useCallback(async (message: string) => {
     if (!ttsWsRef.current || !playerRef.current) {
@@ -95,11 +98,21 @@ export default function Playground() {
       return;
     }
 
-    const fullTranscript = allTranscripts
-      .map((t) => t.text)
-      .join(" ");
+    // Only send transcript entries that haven't been processed yet
+    const newEntries = allTranscripts.slice(lastProcessedIndexRef.current);
+    if (newEntries.length === 0) return;
 
-    if (!fullTranscript.trim()) return;
+    const newText = newEntries.map((t) => t.text).join(" ");
+    if (!newText.trim()) return;
+
+    // Build transcript with context marker so follow-up commands have context
+    let transcriptToSend: string;
+    if (lastProcessedIndexRef.current > 0) {
+      const previousText = allTranscripts.slice(0, lastProcessedIndexRef.current).map((t) => t.text).join(" ");
+      transcriptToSend = `[ALREADY PROCESSED - do NOT re-create issues from this section:]\n${previousText}\n\n[NEW INSTRUCTION - act on this:]\n${newText}`;
+    } else {
+      transcriptToSend = newText;
+    }
 
     console.log("[Grape] Sending transcript to LLM...");
     isProcessingRef.current = true;
@@ -107,12 +120,13 @@ export default function Playground() {
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    let toolUsed = false;
 
     try {
       const res = await fetch("/api/playground", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: fullTranscript }),
+        body: JSON.stringify({ transcript: transcriptToSend }),
         signal: abortController.signal,
       });
 
@@ -137,10 +151,20 @@ export default function Playground() {
           try {
             const data = JSON.parse(payload);
 
-            if (data.type === "tool_use" && data.name === "speak_to_user") {
+            if (data.type === "tool_use") {
+              toolUsed = true;
+            }
+
+            if (data.type === "tool_use" && data.name?.includes("speak_to_user")) {
               console.log("[Grape] LLM wants to speak:", data.input?.message);
               // Fire TTS immediately — don't wait for stream to finish
               speakTTS(data.input?.message);
+            }
+
+            if (data.type === "tool_use" && data.name?.startsWith("mcp__linear__")) {
+              const shortName = data.name.replace("mcp__linear__", "");
+              console.log("[Grape] Linear action:", shortName, data.input);
+              setLinearActions((prev) => [...prev, { name: shortName, input: data.input }]);
             }
 
             if (data.type === "text") {
@@ -164,9 +188,23 @@ export default function Playground() {
         console.error("[Grape] LLM request failed:", err);
       }
     } finally {
+      // Only advance the processed index when the agent took action (used tools).
+      // This preserves context for multi-segment commands that haven't been acted on yet.
+      if (toolUsed) {
+        lastProcessedIndexRef.current = allTranscripts.length;
+      }
       isProcessingRef.current = false;
       setIsProcessing(false);
       abortControllerRef.current = null;
+
+      // Re-trigger for entries that arrived during processing (e.g., "put it under todo")
+      const pending = transcriptsRef.current.slice(lastProcessedIndexRef.current);
+      if (pending.length > 0 && pending.some((t) => t.text.trim())) {
+        if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+        sendTimerRef.current = setTimeout(() => {
+          sendToLLM(transcriptsRef.current);
+        }, 500);
+      }
     }
   }, [speakTTS]);
 
@@ -206,6 +244,10 @@ export default function Playground() {
     savedOnMessageRef.current = null;
 
     // LLM cleanup
+    if (sendTimerRef.current) {
+      clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -222,6 +264,8 @@ export default function Playground() {
     setError(null);
     setIsConnecting(true);
     transcriptsRef.current = [];
+    lastProcessedIndexRef.current = 0;
+    setLinearActions([]);
 
     try {
       // 1. Get access token from our API route
@@ -302,7 +346,11 @@ export default function Playground() {
               console.log("[Grape] FINAL:", text);
 
               // Send to LLM for decision
-              sendToLLM(transcriptsRef.current);
+              // Debounce: wait for user to finish speaking before sending
+              if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+              sendTimerRef.current = setTimeout(() => {
+                sendToLLM(transcriptsRef.current);
+              }, 3000);
             }
             setPartialText("");
           } else {
@@ -445,6 +493,41 @@ export default function Playground() {
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400">
             {error}
+          </div>
+        )}
+
+        {/* Linear Actions */}
+        {linearActions.length > 0 && (
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-800 dark:bg-indigo-950">
+            <h2 className="mb-3 text-sm font-medium uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+              Linear Actions
+            </h2>
+            <div className="space-y-2">
+              {linearActions.map((action, i) => (
+                <div
+                  key={i}
+                  className="rounded-md border border-indigo-200 bg-white px-3 py-2 dark:border-indigo-800 dark:bg-indigo-900"
+                >
+                  <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                    {action.name.replace(/_/g, " ")}
+                  </span>
+                  {action.input != null && typeof action.input === "object" ? (
+                    <div className="mt-1 space-y-0.5">
+                      {Object.entries(action.input as Record<string, unknown>).map(([key, val]) => (
+                        <div key={key} className="flex gap-2 text-xs">
+                          <span className="shrink-0 font-mono text-indigo-400 dark:text-indigo-500">
+                            {key}:
+                          </span>
+                          <span className="truncate text-indigo-600 dark:text-indigo-400">
+                            {String(val)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
