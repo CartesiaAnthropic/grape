@@ -12,11 +12,12 @@ export const maxDuration = 60;
 // --- Linear integration instructions (shared across all prompts) ---
 const LINEAR_INSTRUCTIONS = `LINEAR INTEGRATION:
 - You have access to Linear project management tools via MCP.
-- When someone asks you to create an issue, update a ticket, check status, or perform any Linear action, use the appropriate Linear MCP tool.
+- When someone asks you to create an issue, update a ticket, check status, or perform any Linear action, IMMEDIATELY call the Linear MCP tool. Do NOT respond with text first — just call the tool.
 - The transcript comes from speech-to-text and may contain minor grammar errors or filler words. Clean up grammar and capitalize properly, but stay faithful to the user's actual words. Do NOT invent new titles or heavily reinterpret — use what the user said. For example, "fix the production bug in response API" should become "Fix production bug in response API", not something unrelated.
+- INFER EVERYTHING: You must infer the title, description, team, priority, and all other fields from the conversation context. Use what was just discussed to write a clear title and description. Pick reasonable defaults for anything not specified (first available team, "Normal" priority, backlog status).
+- ABSOLUTELY NEVER ask the user for clarification, follow-up questions, or confirmation before creating the ticket. Do NOT ask "What should the title be?", "Which team?", "What priority?" — just figure it out from context and create the ticket immediately. This is critical.
 - When the user specifies a status (e.g., "assign to todo", "mark as in progress"), you MUST first call the Linear MCP tool to list the team's workflow states, find the matching state ID, then pass that state ID when creating or updating the issue. Do NOT pass human-readable strings like "to do" — Linear requires the actual state UUID.
-- When the user specifies a priority (e.g., "urgent", "high priority"), assignee (e.g., "assign to John"), or label (e.g., "label it as a bug"), honor those requests by setting the corresponding fields when creating or updating the Linear issue.
-- NEVER ask the user for clarification or follow-up questions. This is a hackathon demo — just act immediately. Use your best judgment to interpret the request, pick reasonable defaults for any missing fields (default team, "Normal" priority, backlog status), and create the issue right away. Do NOT say things like "Could you repeat that?" or "What priority should it be?" — just do it.
+- When the user specifies a priority, assignee, or label, honor those. Otherwise use defaults.
 - After executing a Linear action, ALWAYS use speak_to_user to confirm what you did. For example: "Done! I've created a Linear issue titled 'Fix timeout issue on mobile' and assigned it to the backlog."
 - Common Linear actions: create issues, search issues, update issue status/priority/assignee, list projects, list teams.`;
 

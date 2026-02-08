@@ -1000,13 +1000,13 @@ export default function Playground() {
       <div
         className="pointer-events-none fixed left-0 right-0 z-40 flex justify-center transition-all duration-500 ease-out"
         style={{
-          top: "28%",
+          top: "22%",
           opacity: researchStatus === "done" && researchTitle && !linearToast ? 1 : 0,
           transform: researchStatus === "done" && researchTitle && !linearToast ? "translateY(0)" : "translateY(-12px)",
         }}
       >
         <div
-          className="rounded-full px-8 py-4"
+          className="rounded-full px-6 py-3"
           style={{
             backgroundColor: "rgba(255, 255, 255, 0.92)",
             backdropFilter: "blur(10px)",
@@ -1015,7 +1015,7 @@ export default function Playground() {
         >
           <span
             style={{
-              fontSize: "28px",
+              fontSize: "20px",
               fontWeight: 500,
               color: "#1a1a1a",
               fontFamily:
