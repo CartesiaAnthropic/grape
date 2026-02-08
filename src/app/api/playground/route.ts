@@ -6,103 +6,107 @@ export const maxDuration = 30;
 
 const client = new Anthropic();
 
-const SYSTEM_PROMPT = `You are Grape, a voice AI assistant embedded in product team meetings. You listen to real-time meeting transcripts.
+// --- State-specific prompts ---
+// Each research state gets a different system prompt so Grape behaves differently.
 
-CRITICAL: You MUST follow these rules strictly. Do NOT generate long text responses.
-
-RULES:
-1. ADDRESSED BY NAME ("Grape", "Hey Grape"): Call speak_to_user with a 1-2 sentence response. Nothing else.
-2. RESEARCHABLE QUESTION DETECTED: Call start_research with the question. Do NOT speak. Do NOT output text.
-3. ASKED FOR FINDINGS ("what did you find?"): Call speak_to_user with a concise summary from the research results below.
-4. OTHERWISE: Output ONLY "No action needed." — nothing else, no commentary, no suggestions.
-
-WHAT COUNTS AS RESEARCHABLE:
-- Factual comparisons: "Should we use X or Y?", "What's better, X or Y?"
-- Market/stats questions: "What's the market size for X?"
-- Technical questions: "How does X handle Y?", "What are best practices for X?"
-- Explicit requests: "Let's research X", "We should look into X"
-
-WHAT IS NOT RESEARCHABLE:
-- Internal team questions, opinions, or discussions about their own product
-- Questions directed at you by name (respond verbally instead)
-
-CONTEXT:
-- You are OVERHEARING a product team meeting — you are NOT a participant
-- The message contains [CONVERSATION HISTORY] (past, already processed) and [LATEST SEGMENT] (new speech)
-- ONLY act on the [LATEST SEGMENT]. Ignore everything in [CONVERSATION HISTORY] — it was already handled.
-- Only speak when explicitly addressed by name in the LATEST SEGMENT`;
-
-const tools: Anthropic.Tool[] = [
-  {
-    name: "speak_to_user",
-    description:
-      "Speak a message aloud to the meeting participants. Use this when someone directly addresses Grape. Keep responses brief — 1-2 sentences for natural voice delivery.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        message: {
-          type: "string",
-          description: "The message to speak aloud to the user",
-        },
+const SPEAK_TOOL: Anthropic.Tool = {
+  name: "speak_to_user",
+  description:
+    "Speak a message aloud to the meeting participants. Use this when someone directly addresses Grape. Keep responses brief — 1-2 sentences for natural voice delivery.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      message: {
+        type: "string",
+        description: "The message to speak aloud to the user",
       },
-      required: ["message"],
     },
+    required: ["message"],
   },
-  {
-    name: "start_research",
-    description:
-      "Start background research on a factual question detected in the meeting. This runs silently — do NOT speak to users when calling this. Only call this if no research is already in progress.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        question: {
-          type: "string",
-          description: "The factual question to research",
-        },
-      },
-      required: ["question"],
-    },
-  },
-];
+};
 
-function buildSystemPrompt(): string {
+const RESEARCH_TOOL: Anthropic.Tool = {
+  name: "start_research",
+  description:
+    "Start background research on a factual question detected in the meeting. This runs silently — do NOT speak to users when calling this.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      question: {
+        type: "string",
+        description: "The factual question to research",
+      },
+    },
+    required: ["question"],
+  },
+};
+
+// IDLE: Scan the full conversation for researchable questions
+const IDLE_PROMPT = `You are Grape, a voice AI assistant embedded in product team meetings. You are OVERHEARING the meeting — you are NOT a participant.
+
+Read the FULL meeting transcript below. Your job is to detect researchable questions.
+
+RULES — follow strictly, do NOT generate long text:
+1. If there is a researchable question ANYWHERE in the transcript: Call start_research with the question. Do NOT speak. Do NOT output text.
+2. If someone addresses you by name ("Grape", "Hey Grape") in the [LATEST SEGMENT]: Call speak_to_user with a 1-2 sentence response.
+3. Otherwise: Output ONLY "No action needed."
+
+WHEN TO CALL start_research — be AGGRESSIVE:
+- ANY comparison: "X or Y?", "X vs Y", "should we use X or Y", "which is better"
+- Market/stats: "What's the market size for X?"
+- Technical: "How does X handle Y?", "What are best practices for X?"
+- Explicit: "Let's research X", "We should look into X"
+- Examples that MUST trigger: "GitHub or GitLab", "Anthropic or OpenAI", "React or Vue", "Postgres or MySQL"
+- When in doubt, START RESEARCH. Better to research too much than miss a question.
+
+NOT researchable: pure opinions ("Do you like our logo?"), questions addressed to you by name (respond verbally instead).`;
+
+// DONE: Research complete — listen for "Hey Grape" to present findings
+function buildDonePrompt(query: string, result: string): string {
+  return `You are Grape, a voice AI assistant embedded in product team meetings. You are OVERHEARING the meeting.
+
+Research has been completed on: "${query}"
+
+RESEARCH FINDINGS:
+${result}
+
+RULES — follow strictly, do NOT generate long text:
+1. If someone addresses you by name ("Grape", "Hey Grape", "what did you find", "any results") in the [LATEST SEGMENT]: Call speak_to_user with a concise 2-3 sentence summary of the research findings above.
+2. Otherwise: Output ONLY "No action needed."
+
+IMPORTANT: Only respond to the [LATEST SEGMENT]. Ignore the conversation history — it was already processed.`;
+}
+
+function getPromptAndTools(): { system: string; tools: Anthropic.Tool[] } {
   const researchState = getResearchState();
-  let researchContext = "";
 
-  if (researchState.status === "researching") {
-    researchContext = `\n\nRESEARCH STATUS: Currently researching "${researchState.query}". Do NOT call start_research — research is already running.`;
-  } else if (researchState.status === "done" && researchState.result) {
-    researchContext = `\n\nPREVIOUS RESEARCH on "${researchState.query}":\n${researchState.result}\n\nWhen someone asks about findings, use speak_to_user to share a concise summary. You MAY call start_research for a NEW, DIFFERENT question — but do NOT re-research "${researchState.query}".`;
-  } else if (researchState.status === "error") {
-    researchContext = `\n\nRESEARCH FAILED for "${researchState.query}". If asked, let the user know it didn't complete. You may start_research on a different question.`;
+  if (researchState.status === "done" && researchState.result) {
+    return {
+      system: buildDonePrompt(researchState.query!, researchState.result),
+      tools: [SPEAK_TOOL],
+    };
   }
 
-  return SYSTEM_PROMPT + researchContext;
+  // idle or error — scan for research questions
+  return {
+    system: IDLE_PROMPT,
+    tools: [SPEAK_TOOL, RESEARCH_TOOL],
+  };
 }
 
 function buildUserMessage(history: string, latest: string): string {
-  const researchState = getResearchState();
-  let statusNote = "";
-
-  if (researchState.status === "researching") {
-    statusNote = `\n[STATUS: Research in progress for "${researchState.query}". Do NOT call start_research.]`;
-  } else if (researchState.status === "done") {
-    statusNote = `\n[STATUS: Previous research done for "${researchState.query}". Do NOT re-research same topic.]`;
-  } else if (researchState.status === "error") {
-    statusNote = `\n[STATUS: Previous research failed for "${researchState.query}".]`;
-  }
-
   let msg = "";
   if (history.trim()) {
-    msg += `[CONVERSATION HISTORY — for context only, already processed]\n${history}\n\n`;
+    msg += `[CONVERSATION HISTORY]\n${history}\n\n`;
   }
-  msg += `[LATEST SEGMENT — act on THIS only]\n${latest}`;
-  msg += statusNote;
+  msg += `[LATEST SEGMENT]\n${latest}`;
   return msg;
 }
 
 export async function POST(req: Request) {
   const { history, latest } = await req.json();
+
+  const { system, tools } = getPromptAndTools();
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -110,7 +114,7 @@ export async function POST(req: Request) {
       const response = client.messages.stream({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 300,
-        system: buildSystemPrompt(),
+        system,
         tools,
         messages: [{ role: "user", content: buildUserMessage(history ?? "", latest) }],
       });
@@ -151,8 +155,6 @@ export async function POST(req: Request) {
                 )
               );
             }
-            // If research can't start (already done or in progress), don't send
-            // any event — let the polling handle accurate state.
           }
         }
       });

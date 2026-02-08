@@ -73,6 +73,10 @@ export function completeResearch(result: string): void {
   });
 }
 
+export function resetResearch(): void {
+  setState({ ...DEFAULT_STATE });
+}
+
 export function failResearch(error: string): void {
   const s = state();
   setState({

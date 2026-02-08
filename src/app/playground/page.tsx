@@ -275,6 +275,8 @@ export default function Playground() {
   const transcriptsRef = useRef<TranscriptEntry[]>([]);
   const researchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProgressCountRef = useRef(0);
+  const researchStatusRef = useRef(researchStatus);
+  researchStatusRef.current = researchStatus;
 
   // Poll research status while recording
   useEffect(() => {
@@ -305,7 +307,17 @@ export default function Playground() {
   }, [isRecording]);
 
   const CANDY_INDEX = 10;
-  const effectivePreset = isSpeaking ? CANDY_INDEX : activePreset;
+  const NEON_INDEX = 9;
+  const RESEARCHING_INDEX = 0;
+  const RESEARCH_DONE_INDEX = 2;
+
+  const effectivePreset = isSpeaking
+    ? CANDY_INDEX
+    : researchStatus === "researching"
+      ? RESEARCHING_INDEX
+      : researchStatus === "done"
+        ? RESEARCH_DONE_INDEX
+        : activePreset;
 
   const targetColors =
     !isRecording ? IDLE_COLORS : useCustom && !isSpeaking ? customColors : PRESETS[effectivePreset].colors;
@@ -370,6 +382,12 @@ export default function Playground() {
         return;
       }
 
+      // While researching, skip LLM calls — just keep transcribing
+      if (researchStatusRef.current === "researching") {
+        console.log("[Grape] Skipping LLM call: research in progress");
+        return;
+      }
+
       if (allTranscripts.length === 0) return;
 
       const latest = allTranscripts[allTranscripts.length - 1].text;
@@ -416,6 +434,11 @@ export default function Playground() {
               if (data.type === "tool_use" && data.name === "speak_to_user") {
                 console.log("[Grape] LLM wants to speak:", data.input?.message);
                 speakTTS(data.input?.message);
+                // After sharing research findings, reset back to idle (Neon)
+                if (researchStatusRef.current === "done") {
+                  setResearchStatus("idle");
+                  fetch("/api/research-status", { method: "POST" }).catch(() => {});
+                }
               }
 
               if (data.type === "text") {
@@ -509,6 +532,10 @@ export default function Playground() {
     setIsConnecting(true);
     transcriptsRef.current = [];
     micLevelSmoothRef.current = 0;
+    setResearchStatus("idle");
+
+    // Reset server-side research state from any previous session
+    fetch("/api/research-status", { method: "POST" }).catch(() => {});
 
     try {
       // 1. Get access token from our API route
