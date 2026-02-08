@@ -41,9 +41,9 @@ Grape creates the Linear ticket and speaks a short confirmation:
 | Step | Status |
 |------|--------|
 | 1. Passive listening (STT) | Implemented |
-| 2. Proactive trigger detection | Not yet — currently requires "Hey Grape" to respond |
-| 3-4. Background research + indicator | Not yet |
-| 5. Respond when addressed | Implemented (basic) |
+| 2. Proactive trigger detection | Implemented — Haiku detects researchable questions in transcript |
+| 3-4. Background research + indicator | Implemented — Agent SDK background runner + color-coded indicator |
+| 5. Respond when addressed | Implemented (with research results in context) |
 | 6. Short recommendation with actions | Not yet — needs prompt tuning |
 | 7-8. Execute follow-up actions (Linear, email) | Not yet — needs Linear MCP + email tool |
 

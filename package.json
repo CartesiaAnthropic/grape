@@ -12,10 +12,14 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.37",
     "@anthropic-ai/sdk": "^0.74.0",
     "@cartesia/cartesia-js": "^2.2.9",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
+    "@shadergradient/react": "^2.4.20",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "resend": "^6.9.1",
+    "three": "^0.182.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
