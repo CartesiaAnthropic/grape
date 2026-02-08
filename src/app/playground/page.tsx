@@ -629,20 +629,6 @@ export default function Playground() {
       className="relative min-h-screen overflow-hidden"
       style={{ backgroundColor: "#f0edd4" }}
     >
-      {!showTranscriptPanel && (
-        <button
-          onClick={() => setShowTranscriptPanel(true)}
-          className="fixed left-4 top-4 z-50 rounded-xl px-3 py-2 text-sm font-medium cursor-pointer"
-          style={{
-            backgroundColor: "rgba(0, 0, 0, 0.75)",
-            color: "rgba(255,255,255,0.9)",
-            backdropFilter: "blur(12px)",
-          }}
-        >
-          Show Transcript
-        </button>
-      )}
-
       {showTranscriptPanel && (
         <aside
           className="fixed left-0 top-0 z-40 h-full w-[310px] border-r px-4 py-4"
@@ -771,12 +757,30 @@ export default function Playground() {
 
       <div className="relative z-10 flex min-h-screen flex-col">
         <div className="p-8 sm:p-10">
-          <span className="text-[17px] font-medium tracking-[-0.01em]" style={{ color: "#2a2a2a" }}>
+          <span
+            className="tracking-[-0.01em]"
+            style={{ color: "#41651d", fontSize: "35px", fontWeight: 600, lineHeight: 1 }}
+          >
             grape
           </span>
         </div>
 
         <div className="flex flex-1 flex-col items-center justify-end pb-[6vh]">
+          {!showTranscriptPanel && isRecording && (
+            <button
+              onClick={() => setShowTranscriptPanel(true)}
+              className="mb-3 cursor-pointer"
+              style={{
+                color: "rgba(42,42,42,0.55)",
+                fontSize: "15px",
+                fontWeight: 400,
+                fontFamily:
+                  "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI', sans-serif",
+              }}
+            >
+              Show Transcript
+            </button>
+          )}
           <button
             onClick={isRecording ? stop : start}
             disabled={isConnecting}
